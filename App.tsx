@@ -1926,6 +1926,7 @@ const InnerApp: React.FC<InnerAppProps> = ({ allowPlayback = true }) => {
   const [selectedCountry, setSelectedCountry] = useState<string | null>(null);
   const [unreadPingsCount, setUnreadPingsCount] = useState(0);
   const [pings, setPings] = useState<Ping[]>([]);
+  const notificationInitRef = useRef<string | null>(null);
 
   // Load pings from AsyncStorage on mount
   useEffect(() => {
@@ -2334,51 +2335,6 @@ const InnerApp: React.FC<InnerAppProps> = ({ allowPlayback = true }) => {
   } | null>(null);
   const [showAudioModal, setShowAudioModal] = useState<boolean>(false);
   const [audioUrlInput, setAudioUrlInput] = useState<string>('');
-
-  // Register FCM token and store to Firestore for server fanout
-  useEffect(() => {
-    (async () => {
-      try {
-        let messagingMod: any = null;
-        let firestoreMod: any = null;
-        try {
-          messagingMod = require('@react-native-firebase/messaging').default;
-        } catch {}
-        try {
-          firestoreMod = require('@react-native-firebase/firestore').default;
-        } catch {}
-        if (!messagingMod) return;
-        try {
-          await messagingMod().requestPermission?.();
-        } catch {}
-        const token = await messagingMod().getToken?.();
-        const u = auth?.()?.currentUser;
-        if (token && u && firestoreMod) {
-          try {
-            await firestoreMod()
-              .collection('users')
-              .doc(u.uid)
-              .collection('tokens')
-              .doc(String(token))
-              .set(
-                {
-                  token: String(token),
-                  platform: Platform.OS,
-                  createdAt: firestoreMod.FieldValue?.serverTimestamp
-                    ? firestoreMod.FieldValue.serverTimestamp()
-                    : new Date(),
-                },
-                { merge: true },
-              );
-          } catch {}
-        }
-      } catch (e) {
-        try {
-          console.warn('FCM registration failed', e);
-        } catch {}
-      }
-    })();
-  }, []);
   const [transcoding, setTranscoding] = useState<boolean>(false);
 
   // DM subscription - adds messages to pings automatically
@@ -3848,9 +3804,16 @@ const InnerApp: React.FC<InnerAppProps> = ({ allowPlayback = true }) => {
     } catch {}
   }, []);
 
-  // Real-time Pings listener
+  // Single, gated FCM bootstrap (runs only after sign-in and permission)
   useEffect(() => {
+    let cleanup: Array<() => void> = [];
+    let cancelled = false;
+
     const setupNotifications = async () => {
+      if (!user?.uid) return;
+      if (notificationInitRef.current === user.uid) return;
+      notificationInitRef.current = user.uid;
+
       let messagingMod: any = null;
       let firestoreMod: any = null;
       try {
@@ -3859,52 +3822,63 @@ const InnerApp: React.FC<InnerAppProps> = ({ allowPlayback = true }) => {
       try {
         firestoreMod = require('@react-native-firebase/firestore').default;
       } catch {}
+      if (!messagingMod) return;
 
-      if (!messagingMod || !firestoreMod) return;
-
-      try {
-        // Request permissions
-        if (Platform.OS === 'android' && Platform.Version >= 33) {
+      // Android 13+ explicit notification permission
+      if (Platform.OS === 'android' && Platform.Version >= 33) {
+        try {
           await PermissionsAndroid.request(
             PermissionsAndroid.PERMISSIONS.POST_NOTIFICATIONS,
           );
+        } catch {}
+      }
+
+      let authStatus: any = null;
+      try {
+        authStatus = await messagingMod().requestPermission();
+      } catch (err) {
+        console.warn('Notification permission request failed', err);
+      }
+      const enabled =
+        authStatus === messagingMod?.AuthorizationStatus?.AUTHORIZED ||
+        authStatus === messagingMod?.AuthorizationStatus?.PROVISIONAL;
+      if (!enabled) {
+        console.log('Notification permission not granted; skipping FCM init');
+        return;
+      }
+
+      let token: string | null = null;
+      try {
+        token = await messagingMod().getToken();
+      } catch (err) {
+        console.warn('Failed to get FCM token', err);
+      }
+
+      if (token && firestoreMod) {
+        try {
+          await firestoreMod()
+            .collection('users')
+            .doc(user.uid)
+            .collection('tokens')
+            .doc(token)
+            .set(
+              {
+                token,
+                platform: Platform.OS,
+                createdAt: firestoreMod.FieldValue?.serverTimestamp?.(),
+              },
+              { merge: true },
+            );
+        } catch (err) {
+          console.warn('Failed to persist FCM token', err);
         }
+      }
 
-        const authStatus = await messagingMod().requestPermission();
-        const enabled =
-          authStatus === messagingMod.AuthorizationStatus.AUTHORIZED ||
-          authStatus === messagingMod.AuthorizationStatus.PROVISIONAL;
-
-        if (enabled) {
-          console.log('Authorization status:', authStatus);
-
-          // Get FCM token
-          const token = await messagingMod().getToken();
-          console.log('FCM Token:', token);
-
-          const user = auth().currentUser;
-          if (user && token) {
-            // Store token in Firestore
-            await firestoreMod()
-              .collection('users')
-              .doc(user.uid)
-              .collection('tokens')
-              .doc(token)
-              .set(
-                {
-                  token: token,
-                  platform: Platform.OS,
-                  createdAt: firestoreMod.FieldValue.serverTimestamp(),
-                },
-                { merge: true },
-              );
-          }
-
-          // Handle token refresh
-          messagingMod().onTokenRefresh(async (newToken: string) => {
-            console.log('Token refreshed:', newToken);
-            const user = auth().currentUser;
-            if (user) {
+      try {
+        const unsubTokenRefresh = messagingMod().onTokenRefresh(
+          async (newToken: string) => {
+            try {
+              if (!firestoreMod) return;
               await firestoreMod()
                 .collection('users')
                 .doc(user.uid)
@@ -3914,65 +3888,66 @@ const InnerApp: React.FC<InnerAppProps> = ({ allowPlayback = true }) => {
                   {
                     token: newToken,
                     platform: Platform.OS,
-                    updatedAt: firestoreMod.FieldValue.serverTimestamp(),
+                    updatedAt: firestoreMod.FieldValue?.serverTimestamp?.(),
                   },
                   { merge: true },
                 );
+            } catch (err) {
+              console.warn('Failed to persist refreshed FCM token', err);
             }
-          });
+          },
+        );
+        cleanup.push(() => {
+          try {
+            unsubTokenRefresh && unsubTokenRefresh();
+          } catch {}
+        });
+      } catch {}
 
-          // Handle foreground messages
-          messagingMod().onMessage(async (remoteMessage: any) => {
-            console.log('Foreground message:', remoteMessage);
+      try {
+        const unsubMessage = messagingMod().onMessage(handleForegroundRemoteMessage);
+        cleanup.push(() => {
+          try {
+            unsubMessage && unsubMessage();
+          } catch {}
+        });
+      } catch {}
 
-            // Show local notification or update UI
-            const notification = remoteMessage.notification;
-            const data = remoteMessage.data;
+      try {
+        const unsubOpened = messagingMod().onNotificationOpenedApp(
+          (remoteMessage: any) => {
+            handleNotificationNavigation(remoteMessage?.data);
+          },
+        );
+        cleanup.push(() => {
+          try {
+            unsubOpened && unsubOpened();
+          } catch {}
+        });
+      } catch {}
 
-            if (notification) {
-              // Show positive animated in-app toast with SPL logo
-              notifySuccess(notification.body || 'You have new activity');
-              playFalconSound();
-            }
-
-            // Update pings count
-            setUnreadPingsCount(prev => prev + 1);
-          });
-
-          // Handle background/quit state notifications
-          messagingMod()
-            .getInitialNotification()
-            .then((remoteMessage: any) => {
-              if (remoteMessage) {
-                console.log('App opened from quit state:', remoteMessage);
-                handleNotificationNavigation(remoteMessage.data);
-              }
-            });
-
-          messagingMod().onNotificationOpenedApp((remoteMessage: any) => {
-            console.log('App opened from background:', remoteMessage);
-            handleNotificationNavigation(remoteMessage.data);
-          });
+      try {
+        const initial = await messagingMod().getInitialNotification();
+        if (initial && !cancelled) {
+          handleNotificationNavigation(initial.data);
         }
-      } catch (error) {
-        console.warn('Notification setup failed:', error);
-      }
-    };
-
-    const handleNotificationNavigation = (data: any) => {
-      if (data?.waveId) {
-        const waveIndex = wavesFeed.findIndex(w => w.id === data.waveId);
-        if (waveIndex !== -1) {
-          setCurrentIndex(waveIndex);
-          setWaveKey(Date.now());
-        }
-      } else if (data?.type === 'ping' || data?.route === 'Pings') {
-        setShowPings(true);
+      } catch (err) {
+        console.warn('Failed to process initial notification', err);
       }
     };
 
     setupNotifications();
-  }, []);
+
+    return () => {
+      cancelled = true;
+      cleanup.forEach(fn => {
+        try {
+          fn && fn();
+        } catch {}
+      });
+      if (!user?.uid) notificationInitRef.current = null;
+    };
+  }, [user?.uid, handleForegroundRemoteMessage, handleNotificationNavigation]);
 
   const markPingsAsRead = async () => {
     try {
@@ -5901,6 +5876,75 @@ const InnerApp: React.FC<InnerAppProps> = ({ allowPlayback = true }) => {
       return '';
     }
   }, []);
+
+  const handleNotificationNavigation = useCallback(
+    (data: any) => {
+      if (data?.waveId) {
+        const waveIndex = wavesFeed.findIndex(w => w.id === data.waveId);
+        if (waveIndex !== -1) {
+          setCurrentIndex(waveIndex);
+          setWaveKey(Date.now());
+        }
+      } else if (data?.type === 'ping' || data?.route === 'Pings') {
+        setShowPings(true);
+      }
+    },
+    [wavesFeed],
+  );
+
+  const handleForegroundRemoteMessage = useCallback(
+    (rm: any) => {
+      try {
+        const type =
+          rm?.data?.type ||
+          rm?.notification?.title?.toLowerCase() ||
+          'activity';
+        const waveId = rm?.data?.waveId || undefined;
+        const actor = rm?.data?.actorName || rm?.data?.fromName || 'Drifter';
+        const text =
+          rm?.notification?.body || rm?.data?.text || 'New activity';
+        const id =
+          rm?.messageId || rm?.data?.id || rm?.data?.messageId || String(Date.now());
+        const mappedType = (
+          type.includes('echo')
+            ? 'echo'
+            : type.includes('splash')
+            ? 'splash'
+            : type.includes('message')
+            ? 'message'
+            : 'system_message'
+        ) as any;
+
+        setPings(prev => {
+          const exists = prev.some(p => p.id === id);
+          if (exists) return prev;
+          return [
+            {
+              id,
+              type: mappedType,
+              actorName: `@${actor}`,
+              text,
+              timestamp: new Date(),
+              read: false,
+              waveId,
+            },
+            ...prev,
+          ];
+        });
+        setUnreadPingsCount(n => n + 1);
+
+        if (rm?.notification?.body) {
+          notifySuccess(rm.notification.body || 'You have new activity');
+          playFalconSound();
+        }
+      } catch (err) {
+        try {
+          console.warn('Failed to handle foreground message', err);
+        } catch {}
+      }
+    },
+    [notifySuccess, playFalconSound, setPings, setUnreadPingsCount],
+  );
 
   // Cross-version Android audio permission helper (A12/A13/A14)
   const ensureAudioPermission = async (): Promise<boolean> => {
@@ -10787,54 +10831,6 @@ const LiveStreamModal = ({
   const promptSubmitRef = useRef<undefined | ((val: string) => void)>(
     undefined,
   );
-
-  // Foreground FCM to Pings
-  useEffect(() => {
-    let messagingMod: any = null;
-    try {
-      messagingMod = require('@react-native-firebase/messaging').default;
-    } catch {}
-    if (!messagingMod) return;
-    const unsub = messagingMod().onMessage((rm: any) => {
-      try {
-        const type =
-          rm?.data?.type ||
-          rm?.notification?.title?.toLowerCase() ||
-          'activity';
-        const waveId = rm?.data?.waveId || undefined;
-        const actor = rm?.data?.actorName || rm?.data?.fromName || 'Drifter';
-        const text = rm?.notification?.body || rm?.data?.text || 'New activity';
-        const id = String(Date.now());
-        const mappedType = (
-          type.includes('echo')
-            ? 'echo'
-            : type.includes('splash')
-            ? 'splash'
-            : type.includes('message')
-            ? 'message'
-            : 'system_message'
-        ) as any;
-        setPings((prev: any) => [
-          {
-            id,
-            type: mappedType,
-            actorName: `@${actor}`,
-            text,
-            timestamp: new Date(),
-            read: false,
-            waveId,
-          },
-          ...prev,
-        ]);
-        setUnreadPingsCount((n: any) => n + 1);
-      } catch {}
-    });
-    return () => {
-      try {
-        unsub && unsub();
-      } catch {}
-    };
-  }, []);
 
   useEffect(() => {
     if (isChartered) {

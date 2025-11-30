@@ -83,7 +83,56 @@ import {
   TextInput,
   TouchableOpacity,
   View,
+  Switch,
+  AccessibilityInfo,
 } from 'react-native';
+// Notification Preferences Modal
+const NOTIF_PREFS_KEY = 'notification_prefs_v1';
+const defaultNotifPrefs = {
+  general: true,
+  mentions: true,
+  marketing: false,
+};
+
+function NotificationPreferencesModal({ visible, onClose }: { visible: boolean; onClose: () => void }) {
+  const [prefs, setPrefs] = useState(defaultNotifPrefs);
+  useEffect(() => {
+    if (visible) {
+      AsyncStorage.getItem(NOTIF_PREFS_KEY).then(val => {
+        if (val) setPrefs(JSON.parse(val));
+      });
+    }
+  }, [visible]);
+  const updatePref = (key: keyof typeof defaultNotifPrefs, value: boolean) => {
+    const next = { ...prefs, [key]: value };
+    setPrefs(next);
+    AsyncStorage.setItem(NOTIF_PREFS_KEY, JSON.stringify(next));
+  };
+  return (
+    <Modal visible={visible} animationType="slide" transparent accessibilityViewIsModal onRequestClose={onClose}>
+      <View style={styles.modalRoot}>
+        <View style={styles.modalContent}>
+          <Text style={styles.modalTitle} accessibilityRole="header" accessibilityLabel="Notification Preferences">Notification Preferences</Text>
+          <View style={{ flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', marginVertical: 8 }}>
+            <Text style={{ color: 'white', fontSize: 16 }} accessibilityLabel="General notifications">General</Text>
+            <Switch value={prefs.general} onValueChange={v => updatePref('general', v)} accessibilityLabel="Toggle general notifications" />
+          </View>
+          <View style={{ flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', marginVertical: 8 }}>
+            <Text style={{ color: 'white', fontSize: 16 }} accessibilityLabel="Mentions notifications">Mentions</Text>
+            <Switch value={prefs.mentions} onValueChange={v => updatePref('mentions', v)} accessibilityLabel="Toggle mentions notifications" />
+          </View>
+          <View style={{ flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', marginVertical: 8 }}>
+            <Text style={{ color: 'white', fontSize: 16 }} accessibilityLabel="Marketing notifications">Marketing</Text>
+            <Switch value={prefs.marketing} onValueChange={v => updatePref('marketing', v)} accessibilityLabel="Toggle marketing notifications" />
+          </View>
+          <TouchableOpacity onPress={onClose} style={styles.closeBtn} accessibilityRole="button" accessibilityLabel="Close notification preferences">
+            <Text style={styles.closeText}>Close</Text>
+          </TouchableOpacity>
+        </View>
+      </View>
+    </Modal>
+  );
+}
 import EditableProfileAvatar from './EditableProfileAvatar';
 import ImageCropPicker from 'react-native-image-crop-picker';
 const { AudioPicker } = NativeModules;
@@ -14778,6 +14827,8 @@ const App: React.FC = () => {
     );
   }
 
+  // Accessibility: Modal state for notification preferences
+  const [notifModal, setNotifModal] = useState(false);
   return (
     <View style={{ flex: 1, backgroundColor: 'black' }}>
       <GestureHandlerRootView style={{ flex: 1 }}>
@@ -14786,6 +14837,8 @@ const App: React.FC = () => {
             <DataSaverProvider>
               <Suspense fallback={<ActivityIndicator size="large" color="#00C2FF" style={{ flex: 1, justifyContent: 'center', alignItems: 'center' }} />}>
                 <NavigationContainer>
+                  {/* Notification Preferences Modal (now triggered from PINGS modal) */}
+                  <NotificationPreferencesModal visible={notifModal} onClose={() => setNotifModal(false)} />
                   {initializing ? (
                     <View
                       style={{
@@ -14795,7 +14848,7 @@ const App: React.FC = () => {
                         backgroundColor: '#0A1929',
                       }}
                     >
-                      <ActivityIndicator size="large" color="#00C2FF" />
+                      <ActivityIndicator size="large" color="#00C2FF" accessibilityLabel="Loading indicator" />
                       <Text
                         style={{
                           marginTop: 16,
@@ -14803,6 +14856,9 @@ const App: React.FC = () => {
                           fontSize: 16,
                           fontStyle: 'italic',
                         }}
+                        accessibilityRole="header"
+                        accessibilityLabel="Navigating the seas"
+                        allowFontScaling
                       >
                         Navigating the seas…
                       </Text>
@@ -14817,70 +14873,160 @@ const App: React.FC = () => {
             </DataSaverProvider>
           </SafeApp>
         </SafeAreaProvider>
-      </GestureHandlerRootView>
+      {/* PINGS */}
+      <Modal
+        visible={showPings}
+        transparent
+        animationType="fade"
+        onRequestClose={() => setShowPings(false)}
+      >
+        <View
+          style={[styles.modalRoot, { justifyContent: 'center', padding: 24 }]}
+        >
+          <View
+            style={[
+              styles.logbookContainer,
+              {
+                maxHeight: SCREEN_HEIGHT * 0.7,
+                borderRadius: 12,
+                overflow: 'hidden',
+              },
+            ]}
+          >
+            {paperTexture && (
+              <Image source={paperTexture} style={styles.logbookBg} />
+            )}
+            <View style={styles.logbookPage}>
+              <Text style={styles.logbookTitle}>PINGS</Text>
+              {/* Notification Preferences Button inside PINGS */}
+              <Pressable
+                style={{ alignSelf: 'flex-end', marginBottom: 8, backgroundColor: '#00C2FF', borderRadius: 8, paddingHorizontal: 12, paddingVertical: 6 }}
+                onPress={() => setNotifModal(true)}
+                accessibilityRole="button"
+                accessibilityLabel="Open notification preferences"
+              >
+                <Text style={{ color: '#001529', fontWeight: '700' }}>Notification Preferences</Text>
+              </Pressable>
+              <ScrollView>
+                {pings.length === 0 ? (
+                  <Text
+                    style={{
+                      color: 'rgba(255,255,255,0.7)',
+                      textAlign: 'center',
+                      marginTop: 20,
+                    }}
+                  >
+                    No pings yet
+                  </Text>
+                ) : (
+                  pings.map((p, idx) => (
+                    <View
+                      key={`${p.id || 'unknown'}-${idx}`}
+                      style={[
+                        styles.logbookAction,
+                        {
+                          opacity: p.read ? 0.6 : 1,
+                          flexDirection: 'column',
+                          alignItems: 'flex-start',
+                          paddingVertical: 12,
+                        },
+                      ]}
+                    >
+                      <View
+                        style={{
+                          flexDirection: 'row',
+                          justifyContent: 'space-between',
+                          width: '100%',
+                          marginBottom: 4,
+                        }}
+                      >
+                        <Text
+                          style={[
+                            styles.pingText,
+                            { fontWeight: '600', flex: 1 },
+                          ]}
+                        >
+                          {formatPingMessage(p)}
+                        </Text>
+                        <Text
+                          style={{
+                            color: 'rgba(255,255,255,0.5)',
+                            fontSize: 12,
+                            marginLeft: 8,
+                          }}
+                        >
+                          {formatPingTime(p.timestamp)}
+                        </Text>
+                      </View>
+                      {p.type === 'message' && (p as any).fromUid && (
+                        <Pressable
+                          style={[styles.pingButton, { marginTop: 8 }]}
+                          onPress={() => {
+                            setShowPings(false);
+                            setMessageRecipient({
+                              uid: (p as any).fromUid,
+                              name: displayHandle(
+                                (p as any).fromUid,
+                                p.actorName,
+                              ),
+                            });
+                            setMessageText('');
+                            setShowSendMessage(true);
+                          }}
+                        >
+                          <Text style={{ color: '#00C2FF', fontWeight: '700' }}>
+                            Reply
+                          </Text>
+                        </Pressable>
+                      )}
+                      {(p.type === 'splash' || p.type === 'echo') &&
+                        p.waveId && (
+                          <Pressable
+                            style={[styles.pingButton, { marginTop: 8 }]}
+                            onPress={() => handlePingAction(p)}
+                          >
+                            <Text
+                              style={{ color: '#00C2FF', fontWeight: '700' }}
+                            >
+                              {p.type === 'echo' ? 'View Echo' : 'View Wave'}
+                            </Text>
+                          </Pressable>
+                        )}
+                      {p.type === 'follow' && (p as any).fromUid && (
+                        <Pressable
+                          style={[styles.pingButton, { marginTop: 8 }]}
+                          onPress={() => {
+                            setShowPings(false);
+                            setMessageRecipient({
+                              uid: (p as any).fromUid,
+                              name: displayHandle(
+                                (p as any).fromUid,
+                                p.actorName,
+                              ),
+                            });
+                            setMessageText('');
+                            setShowSendMessage(true);
+                          }}
+                        >
+                          <Text style={{ color: '#00C2FF', fontWeight: '700' }}>
+                            Message
+                          </Text>
+                        </Pressable>
+                      )}
+                    </View>
+                  ))
+                )}
+              </ScrollView>
+            </View>
+          </View>
+          <Pressable
+            style={styles.dismissBtn}
+            onPress={() => setShowPings(false)}
+          >
+            <Text style={styles.dismissText}>Close</Text>
+          </Pressable>
+        </View>
+      </Modal>
     </View>
   );
-};
-
-// Top-level error boundary wrapper for the app
-const AppWithErrorBoundary: React.FC = () => (
-  <ErrorBoundary>
-    <App />
-  </ErrorBoundary>
-);
-
-export default AppWithErrorBoundary;
-
-/* --------------------------- Styles --------------------------- */
-const authStyles = StyleSheet.create({
-  screen: {
-    flex: 1,
-    padding: 20,
-    backgroundColor: 'transparent',
-    paddingTop: 40,
-  },
-  title: {
-    fontSize: 24,
-    fontWeight: '700',
-    marginBottom: 20,
-    color: 'white',
-    textShadowColor: 'rgba(0,0,0,0.7)',
-    textShadowRadius: 4,
-    textShadowOffset: { width: 1, height: 1 },
-  },
-  label: {
-    fontSize: 14,
-    color: 'rgba(255,255,255,0.9)',
-    marginBottom: 6,
-    fontWeight: '600',
-    textShadowColor: 'rgba(0,0,0,0.5)',
-    textShadowRadius: 2,
-  },
-  input: {
-    borderWidth: 1,
-    borderColor: 'rgba(255,255,255,0.4)',
-    borderRadius: 10,
-    paddingHorizontal: 12,
-    paddingVertical: Platform.select({ ios: 12, android: 10 }),
-    fontSize: 16,
-    backgroundColor: 'rgba(0,0,0,0.35)',
-    color: 'white',
-  },
-  btn: {
-    backgroundColor: '#007bff',
-    paddingVertical: 12,
-    borderRadius: 12,
-    alignItems: 'center',
-    marginTop: 6,
-    borderWidth: 1,
-    borderColor: 'rgba(255,255,255,0.3)',
-  },
-  btnText: { color: '#fff', fontSize: 16, fontWeight: '600' },
-  link: {
-    color: '#2196F3',
-    textAlign: 'center',
-    fontWeight: '700',
-    textShadowColor: 'rgba(0,0,0,0.5)',
-    textShadowRadius: 2,
-  },
-});
+}

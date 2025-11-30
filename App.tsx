@@ -2927,6 +2927,76 @@ const InnerApp: React.FC<InnerAppProps> = ({ allowPlayback = true }) => {
     };
   }, []);
   const [retryMap, setRetryMap] = useState<Record<string, number>>({});
+  // Remove a broken wave from local state + persisted cache so it can't poison startup
+  const dropWaveFromCache = useCallback(async (waveId: string) => {
+    if (!waveId) return;
+    setWavesFeed(prev => prev.filter(w => w.id !== waveId));
+    setPublicFeed(prev => prev.filter(w => w.id !== waveId));
+    try {
+      const AS = AsyncStorage;
+      if (AS?.getItem && AS?.setItem) {
+        const raw = await AS.getItem('my_waves');
+        if (raw) {
+          const parsed = JSON.parse(raw);
+          if (Array.isArray(parsed)) {
+            const filtered = parsed.filter((w: any) => w?.id !== waveId);
+            await AS.setItem('my_waves', JSON.stringify(filtered));
+          }
+        }
+      }
+    } catch {}
+    try {
+      const FS = require('react-native-fs');
+      if (FS?.DocumentDirectoryPath) {
+        const filePath = FS.DocumentDirectoryPath + '/my_waves.json';
+        const exists = await FS.exists(filePath);
+        if (exists) {
+          const raw = await FS.readFile(filePath, 'utf8');
+          const parsed = JSON.parse(raw);
+          if (Array.isArray(parsed)) {
+            const filtered = parsed.filter((w: any) => w?.id !== waveId);
+            await FS.writeFile(filePath, JSON.stringify(filtered), 'utf8');
+          }
+        }
+      }
+    } catch {}
+  }, []);
+  const handleVideoPlaybackError = useCallback(
+    (waveId: string, code?: string) => {
+      try {
+        markBuffering(waveId, false);
+      } catch {}
+      setRetryMap(prev => {
+        const nextAttempts = (prev[waveId] || 0) + 1;
+        const shouldRetry =
+          !isOffline && code?.startsWith?.('-') && nextAttempts <= 3;
+        if (shouldRetry) {
+          const delay = Math.min(8000, 1000 * Math.pow(2, nextAttempts));
+          setTimeout(() => {
+            try {
+              setWaveKey(Date.now());
+            } catch {}
+          }, delay);
+        } else {
+          setVideoErrorMap(m => ({ ...m, [waveId]: true }));
+          // If this wave is active, advance to the next and drop it from cache so cold start won't crash
+          setCurrentIndex(idx => {
+            const waveIdx = displayFeed.findIndex(w => w.id === waveId);
+            if (waveIdx === -1) return idx;
+            if (displayFeed.length <= 1) return 0;
+            if (idx === waveIdx) {
+              const next = Math.min(displayFeed.length - 1, waveIdx + 1);
+              return next === waveIdx ? Math.max(0, waveIdx - 1) : next;
+            }
+            return idx > waveIdx ? Math.max(0, idx - 1) : idx;
+          });
+          dropWaveFromCache(waveId);
+        }
+        return { ...prev, [waveId]: nextAttempts };
+      });
+    },
+    [displayFeed, dropWaveFromCache, isOffline, markBuffering],
+  );
   const [bottomBarHeight, setBottomBarHeight] = useState(60);
   // UI Visibility states
   const [isUiVisible, setIsUiVisible] = useState(false);
@@ -6810,30 +6880,10 @@ const InnerApp: React.FC<InnerAppProps> = ({ allowPlayback = true }) => {
                           onError={(e: any) => {
                             try {
                               console.warn('FEED VIDEO ERR', e);
-                              markBuffering(item.id, false);
                               const code = e?.error?.code
                                 ? String(e.error.code)
                                 : '';
-                              setRetryMap(prev => {
-                                const n = (prev[item.id] || 0) + 1;
-                                // Exponential backoff retry up to 3 times for transient errors
-                                if (!isOffline && code.startsWith('-') && n <= 3) {
-                                  const delay = Math.min(
-                                    8000,
-                                    1000 * Math.pow(2, n),
-                                  );
-                                  setTimeout(
-                                    () => setWaveKey(Date.now()),
-                                    delay,
-                                  );
-                                } else {
-                                  setVideoErrorMap(m => ({
-                                    ...m,
-                                    [item.id]: true,
-                                  }));
-                                }
-                                return { ...prev, [item.id]: n };
-                              });
+                              handleVideoPlaybackError(item.id, code);
                             } catch {}
                           }}
                           onLoad={(e: any) => {
@@ -6903,29 +6953,10 @@ const InnerApp: React.FC<InnerAppProps> = ({ allowPlayback = true }) => {
                             onError={(e: any) => {
                               try {
                                 console.warn('FEED VIDEO ERR', e);
-                                markBuffering(item.id, false);
                                 const code = e?.error?.code
                                   ? String(e.error.code)
                                   : '';
-                                setRetryMap(prev => {
-                                  const n = (prev[item.id] || 0) + 1;
-                                  if (!isOffline && code.startsWith('-') && n <= 3) {
-                                    const delay = Math.min(
-                                      8000,
-                                      1000 * Math.pow(2, n),
-                                    );
-                                    setTimeout(
-                                      () => setWaveKey(Date.now()),
-                                      delay,
-                                    );
-                                  } else {
-                                    setVideoErrorMap(m => ({
-                                      ...m,
-                                      [item.id]: true,
-                                    }));
-                                  }
-                                  return { ...prev, [item.id]: n };
-                                });
+                                handleVideoPlaybackError(item.id, code);
                               } catch {}
                             }}
                             onLoad={(e: any) => {

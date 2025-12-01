@@ -50,6 +50,9 @@ import React, {
   useRef,
   useCallback,
 } from 'react';
+import { createContext, useContext } from 'react';
+// Global loading context
+const LoadingContext = createContext({ loading: false, setLoading: () => {} });
 import ErrorBoundary from './src/components/ErrorBoundary';
 import { NavigationContainer, useIsFocused } from '@react-navigation/native';
 import { createNativeStackNavigator } from '@react-navigation/native-stack';
@@ -145,6 +148,7 @@ import ShakeForStorms from './ShakeForStorms';
 import OctopusHug from './OctopusHug';
 import FloatingWaterAnimation from './FloatingWaterAnimation';
 import CharteredSeaDriftButton from './CharteredSeaDriftButton';
+import Button from './src/components/Button';
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import { SafeAreaProvider, SafeAreaView, useSafeAreaInsets } from 'react-native-safe-area-context';
 import { launchCamera, launchImageLibrary, CameraOptions, Asset, ImagePickerResponse } from 'react-native-image-picker';
@@ -1442,19 +1446,8 @@ function Field({
   );
 }
 
-function AuthButton({
-  title,
-  onPress,
-}: {
-  title: string;
-  onPress: () => void;
-}) {
-  return (
-    <TouchableOpacity onPress={onPress} style={authStyles.btn}>
-      <Text style={authStyles.btnText}>{title}</Text>
-    </TouchableOpacity>
-  );
-}
+
+// Use the new reusable Button component instead of AuthButton where needed
 
 function AuthBackground() {
   return (
@@ -1473,6 +1466,7 @@ function AuthBackground() {
 // ======================== INNER APP ========================
 type InnerAppProps = { allowPlayback?: boolean };
 const InnerApp: React.FC<InnerAppProps> = ({ allowPlayback = true }) => {
+    const [loading, setLoading] = useState(false);
   // Get current user for ocean features
   const [user, setUser] = useState<any>(null);
   
@@ -1487,8 +1481,16 @@ const InnerApp: React.FC<InnerAppProps> = ({ allowPlayback = true }) => {
     const sub = authMod().onAuthStateChanged((u: any) => {
       setUser(u);
       if (!u) {
-        console.warn(
-          'InnerApp mounted without a user. This indicates a routing issue.',
+        showOceanDialog(
+          'Session Error',
+          'You have been signed out. Please log in again.',
+          [
+            {
+              text: 'Retry',
+              onPress: () => authMod().signInAnonymously().catch(() => notifyError('Login failed')),
+            },
+            { text: 'OK', style: 'cancel' },
+          ]
         );
       }
     });
@@ -1825,7 +1827,7 @@ const InnerApp: React.FC<InnerAppProps> = ({ allowPlayback = true }) => {
 
   // ----- Profile photo handlers -----
   const onEditAvatar = async () => {
-    const uploadAndSave = async (localOrRemoteUri: string) => {
+    const uploadAndSave = async (localOrRemoteUri: string, retryCount = 0) => {
       try {
         let storageMod: any = null;
         let firestoreMod: any = null;
@@ -1872,7 +1874,20 @@ const InnerApp: React.FC<InnerAppProps> = ({ allowPlayback = true }) => {
         } else {
           setProfilePhoto(String(localOrRemoteUri));
         }
-      } catch {}
+      } catch (err) {
+        if (retryCount < 1) {
+          showOceanDialog(
+            'Upload Failed',
+            'Failed to upload your profile photo. Would you like to retry?',
+            [
+              { text: 'Retry', onPress: () => uploadAndSave(localOrRemoteUri, retryCount + 1) },
+              { text: 'Cancel', style: 'cancel' },
+            ]
+          );
+        } else {
+          notifyError('Profile photo upload failed');
+        }
+      }
     };
 
     try {
@@ -2138,7 +2153,7 @@ const InnerApp: React.FC<InnerAppProps> = ({ allowPlayback = true }) => {
   }, []);
 
   const searchOceanEntities = useCallback(
-    async (term: string): Promise<SearchResult[]> => {
+    async (term: string, retryCount = 0): Promise<SearchResult[]> => {
       const normalized = term.trim();
       if (!normalized) return [];
       console.log('searchOceanEntities called with:', normalized);
@@ -2202,6 +2217,19 @@ const InnerApp: React.FC<InnerAppProps> = ({ allowPlayback = true }) => {
           const normalizedErr =
             err instanceof Error ? err : new Error(String(err || 'Unknown backend error'));
           backendError = backendError || normalizedErr;
+          if (retryCount < 1) {
+            showOceanDialog(
+              'Search Failed',
+              'Could not complete your search. Would you like to retry?',
+              [
+                { text: 'Retry', onPress: () => searchOceanEntities(term, retryCount + 1) },
+                { text: 'Cancel', style: 'cancel' },
+              ]
+            );
+            return [];
+          } else {
+            notifyError('Search failed');
+          }
           console.warn('Backend search failed', normalizedErr);
         }
       }
@@ -2212,7 +2240,8 @@ const InnerApp: React.FC<InnerAppProps> = ({ allowPlayback = true }) => {
         return firestoreResults;
       }
       if (backendError) {
-        throw backendError;
+        notifyError('No results found');
+        return [];
       }
       return [];
     },
@@ -6221,12 +6250,14 @@ const InnerApp: React.FC<InnerAppProps> = ({ allowPlayback = true }) => {
     };
   }, [capturedMedia?.uri, attachedAudio?.uri]);
 
+  // Use setLoading from the parent scope if already declared
   const onPostWave = async () => {
     if (!capturedMedia) {
       Alert.alert('No media', 'Please select or capture media first.');
       return;
     }
     setReleasing(true);
+    setLoading(true);
     let uploadedPath: string | null = null;
     let audioDownloadUrl: string | null = null;
     let serverDocId: string | null = null;
@@ -6527,6 +6558,7 @@ const InnerApp: React.FC<InnerAppProps> = ({ allowPlayback = true }) => {
         'Unknown error';
       Alert.alert('Release failed', `Could not release your wave. ${msg}`);
     } finally {
+      setLoading(false);
       // Update local feed immediately (uses local media path)
       const newWave: Wave = {
         id: serverDocId || new Date().toISOString(),
@@ -14275,7 +14307,7 @@ function SignUpScreen({ navigation }: any) {
             </Text>
           </View>
 
-          <AuthButton title="Sign Up" onPress={signUp} />
+          <Button title="Sign Up" onPress={signUp} style={authStyles.btn} textStyle={authStyles.btnText} />
 
           <TouchableOpacity
             onPress={() => navigation.replace('SignIn')}
@@ -14291,20 +14323,25 @@ function SignUpScreen({ navigation }: any) {
   );
 }
 
+
 function SignInScreen({ navigation }: any) {
   const [email, setEmail] = useState('');
   const [password, setPassword] = useState('');
+  const { setLoading } = useContext(LoadingContext);
 
   const signIn = async () => {
     if (!email || !password) {
       Alert.alert('Missing info', 'Enter email and password.');
       return;
     }
+    setLoading(true);
     try {
       await auth().signInWithEmailAndPassword(email.trim(), password);
       // onAuthStateChanged will route to Home automatically
     } catch (e: any) {
       Alert.alert('Sign in failed', e?.message ?? 'Try again.');
+    } finally {
+      setLoading(false);
     }
   };
 
@@ -14330,7 +14367,7 @@ function SignInScreen({ navigation }: any) {
           secureTextEntry
         />
 
-        <AuthButton title="Sign In" onPress={signIn} />
+        <Button title="Sign In" onPress={signIn} style={authStyles.btn} textStyle={authStyles.btnText} />
 
         <TouchableOpacity
           onPress={() => navigation.replace('SignUp')}

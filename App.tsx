@@ -13995,22 +13995,6 @@ function SignUpScreen({ navigation }: any) {
   const [password, setPassword] = useState('');
   const [confirmPassword, setConfirmPassword] = useState('');
   const [agreedToTerms, setAgreedToTerms] = useState(false);
-  const [usernameAvailable, setUsernameAvailable] = useState<boolean | null>(
-    null,
-  );
-  const [usernameLoading, setUsernameLoading] = useState(false);
-  const usernameCheckTimeout = useRef<any>(null);
-
-  // Simple username length validation (6+ characters)
-  useEffect(() => {
-    const handle = username.trim();
-    if (handle.length >= 6) {
-      setUsernameAvailable(true);
-    } else {
-      setUsernameAvailable(null);
-    }
-    setUsernameLoading(false);
-  }, [username]);
 
   const validatePassword = (p: string) => {
     if (p.length < 8 || p.length > 64) return false;
@@ -14029,17 +14013,6 @@ function SignUpScreen({ navigation }: any) {
 
     if (!trimmedEmail || !password || !confirmPassword || !trimmedUsername) {
       Alert.alert('Missing Info', 'Please fill out all fields.');
-      return;
-    }
-    if (
-      trimmedUsername.length < 3 ||
-      trimmedUsername.length > 20 ||
-      !/^[a-zA-Z0-9_]+$/.test(trimmedUsername)
-    ) {
-      Alert.alert(
-        'Invalid Username',
-        'Username must be 3-20 characters and can only contain letters, numbers, and underscores.',
-      );
       return;
     }
     if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(trimmedEmail)) {
@@ -14064,13 +14037,6 @@ function SignUpScreen({ navigation }: any) {
       Alert.alert(
         'Agreement Required',
         'You must agree to the Terms of Service and Privacy Policy to continue.',
-      );
-      return;
-    }
-    if (username.trim().length < 6) {
-      Alert.alert(
-        'Username Too Short',
-        'Please enter a username with at least 6 characters.',
       );
       return;
     }
@@ -14133,18 +14099,6 @@ function SignUpScreen({ navigation }: any) {
             onChangeText={setUsername}
             autoCapitalize="none"
           />
-          {username.length > 0 && (
-            <Text
-              style={{
-                color: username.trim().length >= 6 ? 'lightgreen' : '#ff7b7b',
-                fontSize: 12,
-                marginTop: -8,
-                marginBottom: 8,
-              }}
-            >
-              {username.trim().length >= 6 ? 'Good' : 'At least 6 characters'}
-            </Text>
-          )}
 
           <Field
             label="Email"
@@ -14259,6 +14213,24 @@ function SignInScreen({ navigation }: any) {
     }
   };
 
+  const resetPassword = async () => {
+    const trimmedEmail = email.trim();
+    if (!trimmedEmail) {
+      Alert.alert('Missing Email', 'Enter your email to reset the password.');
+      return;
+    }
+
+    try {
+      await auth().sendPasswordResetEmail(trimmedEmail);
+      Alert.alert(
+        'Reset Link Sent',
+        'A password reset link has been sent to your email address.',
+      );
+    } catch (e: any) {
+      Alert.alert('Reset Failed', e?.message ?? 'Unable to send reset link.');
+    }
+  };
+
   return (
     <View style={authStyles.screen}>
       <AuthBackground />
@@ -14281,13 +14253,19 @@ function SignInScreen({ navigation }: any) {
           secureTextEntry
         />
 
-        <AuthButton title="Sign In" onPress={signIn} />
+        <TouchableOpacity onPress={resetPassword} style={{ marginTop: 6 }}>
+          <Text style={authStyles.link}>Forgot Password?</Text>
+        </TouchableOpacity>
+
+        <View style={{ marginTop: 4 }}>
+          <AuthButton title="Sign In" onPress={signIn} />
+        </View>
 
         <TouchableOpacity
           onPress={() => navigation.replace('SignUp')}
           style={{ marginTop: 14 }}
         >
-          <Text style={authStyles.link}>New here? Create an account</Text>
+          <Text style={authStyles.link}>New Here? Sign up</Text>
         </TouchableOpacity>
       </KeyboardAvoidingView>
     </View>
@@ -14501,11 +14479,11 @@ function WelcomeAnimationScreen({ navigation }: any) {
 }
 /* ----------------------- Root Navigator ----------------------- */
 function AuthStack() {
-  // Default to SignUp so first-time installers land there
+  // Show the sign-in screen first so returning users arrive on it immediately
   return (
     <Stack.Navigator
       screenOptions={{ headerShown: false }}
-      initialRouteName="SignUp"
+      initialRouteName="SignIn"
     >
       <Stack.Screen name="SignUp" component={SignUpScreen} />
       <Stack.Screen name="SignIn" component={SignInScreen} />
